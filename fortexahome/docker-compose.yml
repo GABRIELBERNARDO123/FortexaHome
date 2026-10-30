@@ -1,0 +1,87 @@
+name: fortexahome
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      APP_DB_USER: ${APP_DB_USER}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD}
+    volumes:
+      - fortexahome_pgdata:/var/lib/postgresql/data
+      - ./backend/docker/postgres-init.sh:/docker-entrypoint-initdb.d/10-runtime-role.sh:ro
+    ports:
+      - "127.0.0.1:5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    networks:
+      - fortexahome_net
+
+  migrate:
+    build:
+      context: ./backend
+      target: runtime
+    image: fortexahome-api:local
+    env_file: .env
+    depends_on:
+      db:
+        condition: service_healthy
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+    networks:
+      - fortexahome_net
+
+  api:
+    build:
+      context: ./backend
+      target: runtime
+    image: fortexahome-api:local
+    env_file: .env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:8010:8000"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/v1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    networks:
+      - fortexahome_net
+
+  web:
+    build:
+      context: ./frontend
+      target: runtime
+    image: fortexahome-web:local
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:3010:80"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 10s
+    networks:
+      - fortexahome_net
+
+volumes:
+  fortexahome_pgdata:
+    name: fortexahome_pgdata
+
+networks:
+  fortexahome_net:
+    name: fortexahome_net
