@@ -9,6 +9,7 @@ import {
   Plus,
   ReceiptText,
   Settings,
+  Tags,
   Target,
   X,
 } from "lucide-react";
@@ -27,6 +28,7 @@ const NAV_ITEMS = [
   { to: "/orcamento", label: "Orçamento familiar", icon: PieChart },
   { to: "/metas", label: "Metas financeiras", icon: Target },
   { to: "/relatorios", label: "Relatórios", icon: BarChart3 },
+  { to: "/categorias", label: "Categorias", icon: Tags },
 ];
 
 export function AppShell() {

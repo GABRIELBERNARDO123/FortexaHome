@@ -6,6 +6,7 @@ from decimal import Decimal
 
 from fastapi import HTTPException, status
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.budget import Budget
@@ -65,6 +66,8 @@ def create_budget(db: Session, user: User, data: dict) -> dict:
     category = get_category(db, user.tenant_id, data["category_id"])
     if category.kind != "expense":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Orçamentos usam categorias de despesa")
+    if category.archived:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Categoria arquivada. Escolha uma categoria ativa.")
     existing = db.scalar(
         select(Budget).where(
             Budget.tenant_id == user.tenant_id,
@@ -78,8 +81,15 @@ def create_budget(db: Session, user: User, data: dict) -> dict:
             detail="Já existe um orçamento para esta categoria neste mês. Edite o limite existente.",
         )
     budget = Budget(tenant_id=user.tenant_id, **data)
-    db.add(budget)
-    db.flush()
+    try:
+        with db.begin_nested():
+            db.add(budget)
+            db.flush()
+    except IntegrityError:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Já existe um orçamento para esta categoria neste mês. Edite o limite existente.",
+        ) from None
     audit_service.record(
         db, "BUDGET_CREATED", tenant_id=user.tenant_id, user_id=user.id, entity="budget", entity_id=budget.id
     )

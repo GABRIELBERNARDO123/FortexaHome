@@ -1,0 +1,31 @@
+{
+  "id": "evt-test-00000001",
+  "creation_date": 1793451600000,
+  "event": "PURCHASE_APPROVED",
+  "version": "2.0.0",
+  "data": {
+    "product": {
+      "ucode": "UCODE-FICTICIO-001"
+    },
+    "buyer": {
+      "email": "comprador-ficticio@example.com",
+      "name": "Pessoa Compradora Fictícia"
+    },
+    "purchase": {
+      "transaction": "TX-TESTE-NAO-REAL-0001",
+      "status": "APPROVED",
+      "price": {
+        "value": 1.0,
+        "currency_code": "BRL"
+      },
+      "full_price": {
+        "value": 1.05,
+        "currency_code": "BRL"
+      },
+      "order_bump": {
+        "is_order_bump": false,
+        "parent_purchase_transaction": ""
+      }
+    }
+  }
+}

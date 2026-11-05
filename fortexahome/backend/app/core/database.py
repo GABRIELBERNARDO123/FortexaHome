@@ -26,6 +26,19 @@ _CONTEXT_KEYS = {
     "session_token_hash": "app.session_token_hash",
     "password_reset_hash": "app.password_reset_hash",
     "license_code_hash": "app.license_code_hash",
+    "payment_provider": "app.payment_provider",
+    "payment_order_id": "app.payment_order_id",
+    "catalog_write": "app.catalog_write",
+    "pending_activation_id": "app.pending_activation_id",
+    "password_reset_token_id": "app.password_reset_token_id",
+    "outbox_license_id": "app.outbox_license_id",
+    "support_login_email_hash": "app.support_login_email_hash",
+    "support_session_token_hash": "app.support_session_token_hash",
+    "support_operator_id": "app.support_operator_id",
+    "support_provisioning": "app.support_provisioning",
+    "pending_recovery_email_hash": "app.pending_recovery_email_hash",
+    "license_recovery_email_hash": "app.license_recovery_email_hash",
+    "privacy_erasure": "app.privacy_erasure",
 }
 
 
@@ -61,6 +74,15 @@ def set_db_context(db: Session, **kwargs: Any) -> None:
         )
 
 
+def reapply_db_context(db: Session) -> None:
+    """Reaplica GUCs de RLS após um commit intermediário do rate limiter."""
+    context = db.info.get("rls_context") or {}
+    for key, value in context.items():
+        guc = _CONTEXT_KEYS.get(key)
+        if guc and value is not None:
+            db.execute(text("SELECT set_config(:name, :value, true)"), {"name": guc, "value": str(value)})
+
+
 def get_db() -> Generator[Session, None, None]:
     db = SessionLocal()
     try:
@@ -72,3 +94,14 @@ def get_db() -> Generator[Session, None, None]:
 def check_database() -> None:
     with engine.connect() as connection:
         connection.execute(text("SELECT 1"))
+        if settings.is_production:
+            role = connection.execute(
+                text(
+                    "SELECT current_user, rolsuper, rolbypassrls "
+                    "FROM pg_roles WHERE rolname = current_user"
+                )
+            ).one()
+            if role.current_user != settings.APP_DB_USER:
+                raise RuntimeError("A conexão operacional deve usar APP_DB_USER")
+            if role.rolsuper or role.rolbypassrls:
+                raise RuntimeError("O usuário operacional do banco não pode ter SUPERUSER ou BYPASSRLS")

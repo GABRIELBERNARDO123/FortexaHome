@@ -11,17 +11,24 @@ import {
   Sparkles,
   UserRound,
 } from "lucide-react";
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 
 import { useAuth } from "../context/AuthContext";
 import { Brand, Button, Field, Input } from "../components/ui";
 import { api, errorMessage } from "../lib/api";
+import type { ActivationChallenge } from "../types";
 
-type Mode = "login" | "activate" | "forgot";
+type Mode = "login" | "activate" | "forgot" | "recover";
+
+function formatCountdown(seconds: number): string {
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds % 60;
+  return `${minutes}:${remainder.toString().padStart(2, "0")}`;
+}
 
 export default function AuthPage() {
-  const { login, activate } = useAuth();
+  const { login, activate, confirmActivation, resendActivation, recoverLicense, confirmLicenseRecovery } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const from = (location.state as { from?: string } | null)?.from;
@@ -33,6 +40,12 @@ export default function AuthPage() {
   const [resetToken, setResetToken] = useState<string | null>(null);
   const [forgotEmail, setForgotEmail] = useState("");
   const [forgotSent, setForgotSent] = useState(false);
+  const [recoverySent, setRecoverySent] = useState(false);
+  const [recoveryEmail, setRecoveryEmail] = useState("");
+  const [recoveryCode, setRecoveryCode] = useState("");
+  const [activationChallenge, setActivationChallenge] = useState<ActivationChallenge | null>(null);
+  const [activationCode, setActivationCode] = useState("");
+  const [clock, setClock] = useState(Date.now());
 
   const [loginForm, setLoginForm] = useState({ email: "", password: "" });
   const [activateForm, setActivateForm] = useState({
@@ -41,12 +54,35 @@ export default function AuthPage() {
     password: "",
     license_code: "",
   });
+  const [recoveryForm, setRecoveryForm] = useState({
+    name: "",
+    email: "",
+    password: "",
+  });
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setClock(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const secondsUntilResend = activationChallenge
+    ? Math.max(0, Math.ceil((Date.parse(activationChallenge.resend_at) - clock) / 1000))
+    : 0;
+  const secondsUntilExpiry = activationChallenge?.expires_at
+    ? Math.max(0, Math.ceil((Date.parse(activationChallenge.expires_at) - clock) / 1000))
+    : null;
 
   const changeMode = (next: Mode) => {
     setMode(next);
     setError(null);
     setResetToken(null);
     setForgotSent(false);
+    setRecoverySent(false);
+    setRecoveryCode("");
+    if (next !== "activate") {
+      setActivationChallenge(null);
+      setActivationCode("");
+    }
   };
 
   const submitLogin = async (event: FormEvent) => {
@@ -68,8 +104,39 @@ export default function AuthPage() {
     setLoading(true);
     setError(null);
     try {
-      await activate(activateForm);
+      const challenge = await activate(activateForm);
+      setActivationChallenge(challenge);
+      setActivationCode("");
+    } catch (caught) {
+      setError(errorMessage(caught));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const submitActivationCode = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!activationChallenge) return;
+    setLoading(true);
+    setError(null);
+    try {
+      await confirmActivation(activationChallenge.activation_id, activationCode);
       navigate(destination, { replace: true });
+    } catch (caught) {
+      setError(errorMessage(caught));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const submitResend = async () => {
+    if (!activationChallenge || secondsUntilResend > 0) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const challenge = await resendActivation(activationChallenge.activation_id);
+      setActivationChallenge(challenge);
+      setActivationCode("");
     } catch (caught) {
       setError(errorMessage(caught));
     } finally {
@@ -88,6 +155,36 @@ export default function AuthPage() {
       });
       setForgotSent(true);
       setResetToken(result.reset_token);
+    } catch (caught) {
+      setError(errorMessage(caught));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const submitRecovery = async (event: FormEvent) => {
+    event.preventDefault();
+    setLoading(true);
+    setError(null);
+    try {
+      await recoverLicense(recoveryForm);
+      setRecoveryEmail(recoveryForm.email);
+      setRecoverySent(true);
+      setRecoveryCode("");
+    } catch (caught) {
+      setError(errorMessage(caught));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const submitRecoveryCode = async (event: FormEvent) => {
+    event.preventDefault();
+    setLoading(true);
+    setError(null);
+    try {
+      await confirmLicenseRecovery(recoveryEmail, recoveryCode);
+      navigate(destination, { replace: true });
     } catch (caught) {
       setError(errorMessage(caught));
     } finally {
@@ -171,6 +268,15 @@ export default function AuthPage() {
             >
               Ativar licença
             </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={mode === "recover"}
+              className={mode === "recover" ? "active" : undefined}
+              onClick={() => changeMode("recover")}
+            >
+              Recuperar acesso
+            </button>
           </div>
 
           {mode === "login" ? (
@@ -225,7 +331,7 @@ export default function AuthPage() {
             </div>
           ) : null}
 
-          {mode === "activate" ? (
+          {mode === "activate" && !activationChallenge ? (
             <div className="auth-form-block">
               <div className="auth-heading">
                 <h2>Ative seu acesso FortexaHome.</h2>
@@ -304,6 +410,200 @@ export default function AuthPage() {
                   </button>
                 </p>
               </form>
+            </div>
+          ) : null}
+
+          {mode === "activate" && activationChallenge ? (
+            <div className="auth-form-block">
+              <div className="auth-heading">
+                <h2>Confirme seu e-mail.</h2>
+                <p>Registramos o pedido de envio de um código para <strong>{activationChallenge.email_masked}</strong>. O worker está processando o envio.</p>
+              </div>
+              {activationChallenge.expires_at && secondsUntilExpiry !== null && secondsUntilExpiry > 0 ? (
+                <form onSubmit={submitActivationCode} className="form-stack">
+                  <Field label="Código de verificação" hint="O código tem seis dígitos e só pode ser usado uma vez.">
+                    <div className="input-with-icon">
+                      <KeyRound size={16} />
+                      <Input
+                        inputMode="numeric"
+                        autoComplete="one-time-code"
+                        pattern="[0-9]{6}"
+                        maxLength={6}
+                        required
+                        value={activationCode}
+                        onChange={(event) => setActivationCode(event.target.value.replace(/\D/g, "").slice(0, 6))}
+                        placeholder="000000"
+                        className="mono-input"
+                        aria-label="Código de verificação"
+                      />
+                    </div>
+                  </Field>
+                  <p className="auth-fineprint">Este código expira em {formatCountdown(secondsUntilExpiry)}.</p>
+                  {error ? <div className="form-error" role="alert">{error}</div> : null}
+                  <Button type="submit" variant="primary" loading={loading} disabled={activationCode.length !== 6} className="btn-block">
+                    Confirmar e entrar <ArrowRight size={16} />
+                  </Button>
+                </form>
+              ) : (
+                <div className="forgot-success">
+                  <p>
+                    {activationChallenge.expires_at
+                      ? "Este código expirou. Solicite um novo código para continuar."
+                      : "Seus dados foram atualizados. Solicite o código quando o intervalo de reenvio terminar."}
+                  </p>
+                </div>
+              )}
+              {error ? <div className="form-error" role="alert">{error}</div> : null}
+              <div className="form-stack">
+                <Button
+                  variant="secondary"
+                  onClick={submitResend}
+                  loading={loading}
+                  disabled={secondsUntilResend > 0}
+                  className="btn-block"
+                >
+                  {secondsUntilResend > 0
+                    ? `Reenviar código em ${formatCountdown(secondsUntilResend)}`
+                    : "Enviar novo código"}
+                </Button>
+                <button
+                  type="button"
+                  className="link-button centered"
+                  onClick={() => {
+                    setActivationChallenge(null);
+                    setActivationCode("");
+                    setError(null);
+                  }}
+                >
+                  <ArrowLeft size={14} /> Corrigir dados
+                </button>
+              </div>
+            </div>
+          ) : null}
+
+          {mode === "recover" ? (
+            <div className="auth-form-block">
+              <div className="auth-heading">
+                <h2>Recupere seu acesso.</h2>
+                <p>
+                  Informe o e-mail usado na compra. Se houver uma licença aguardando
+                  ativação, enviaremos um código. Se a conta já existe, enviaremos
+                  instruções de senha.
+                </p>
+              </div>
+              {recoverySent ? (
+                <div className="form-stack">
+                  <div className="forgot-success">
+                    <CheckCircle2 size={28} />
+                    <h3>Confira seu e-mail</h3>
+                    <p>
+                      Se houver um acesso pendente para <strong>{recoveryEmail}</strong>,
+                      enviaremos as instruções. Se a conta já existe, use o link de
+                      redefinição de senha recebido.
+                    </p>
+                  </div>
+                  <form onSubmit={submitRecoveryCode} className="form-stack">
+                    <Field label="Código de ativação recebido" hint="Seis dígitos, quando aplicável.">
+                      <div className="input-with-icon">
+                        <KeyRound size={16} />
+                        <Input
+                          inputMode="numeric"
+                          autoComplete="one-time-code"
+                          pattern="[0-9]{6}"
+                          maxLength={6}
+                          value={recoveryCode}
+                          onChange={(event) =>
+                            setRecoveryCode(event.target.value.replace(/\D/g, "").slice(0, 6))
+                          }
+                          placeholder="000000"
+                          className="mono-input"
+                          aria-label="Código de recuperação"
+                        />
+                      </div>
+                    </Field>
+                    {error ? <div className="form-error" role="alert">{error}</div> : null}
+                    <Button
+                      type="submit"
+                      variant="primary"
+                      loading={loading}
+                      disabled={recoveryCode.length !== 6}
+                      className="btn-block"
+                    >
+                      Confirmar e entrar <ArrowRight size={16} />
+                    </Button>
+                  </form>
+                  <button
+                    type="button"
+                    className="link-button centered"
+                    onClick={() => {
+                      setRecoverySent(false);
+                      setRecoveryCode("");
+                      setError(null);
+                    }}
+                  >
+                    <ArrowLeft size={14} /> Usar outro e-mail
+                  </button>
+                  <p className="auth-fineprint">
+                    Já tem conta?{" "}
+                    <button type="button" className="link-button" onClick={() => changeMode("login")}>
+                      Entrar
+                    </button>
+                  </p>
+                </div>
+              ) : (
+                <form onSubmit={submitRecovery} className="form-stack">
+                  <Field label="Seu nome">
+                    <div className="input-with-icon">
+                      <UserRound size={16} />
+                      <Input
+                        required
+                        minLength={2}
+                        autoComplete="name"
+                        value={recoveryForm.name}
+                        onChange={(event) => setRecoveryForm({ ...recoveryForm, name: event.target.value })}
+                        placeholder="Como quer ser chamado(a)?"
+                      />
+                    </div>
+                  </Field>
+                  <Field label="E-mail da compra">
+                    <div className="input-with-icon">
+                      <Mail size={16} />
+                      <Input
+                        type="email"
+                        required
+                        autoComplete="email"
+                        value={recoveryForm.email}
+                        onChange={(event) => setRecoveryForm({ ...recoveryForm, email: event.target.value })}
+                        placeholder="voce@familia.com"
+                      />
+                    </div>
+                  </Field>
+                  <Field label="Senha" hint="Mínimo de 8 caracteres. Usada apenas se a licença ainda não foi ativada.">
+                    <div className="input-with-icon">
+                      <LockKeyhole size={16} />
+                      <Input
+                        type={showPassword ? "text" : "password"}
+                        required
+                        minLength={8}
+                        autoComplete="new-password"
+                        value={recoveryForm.password}
+                        onChange={(event) => setRecoveryForm({ ...recoveryForm, password: event.target.value })}
+                        placeholder="Crie uma senha segura"
+                      />
+                    </div>
+                  </Field>
+                  {error ? <div className="form-error" role="alert">{error}</div> : null}
+                  <Button type="submit" variant="primary" loading={loading} className="btn-block">
+                    Enviar instruções <ArrowRight size={16} />
+                  </Button>
+                  <p className="auth-fineprint">
+                    Já tem conta ou quer usar a licença?{" "}
+                    <button type="button" className="link-button" onClick={() => changeMode("login")}>
+                      Entrar
+                    </button>
+                  </p>
+                </form>
+              )}
             </div>
           ) : null}
 

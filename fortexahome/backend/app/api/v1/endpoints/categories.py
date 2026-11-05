@@ -18,8 +18,9 @@ def list_categories(
     user: CurrentUser,
     db: DBSession,
     kind: Literal["income", "expense"] | None = Query(default=None),
+    archived: bool | None = Query(default=None),
 ) -> list[dict]:
-    return category_service.list_categories(db, user.tenant_id, kind)
+    return category_service.list_categories(db, user.tenant_id, kind, archived)
 
 
 @router.post("", response_model=CategoryPublic, status_code=status.HTTP_201_CREATED)

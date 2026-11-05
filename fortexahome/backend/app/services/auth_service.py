@@ -5,7 +5,6 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException, status
 from sqlalchemy import select, update
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -25,13 +24,14 @@ from app.core.security import (
     verify_password,
 )
 from app.models.category import Category
+from app.models.email_outbox import EmailOutbox
 from app.models.license import License
 from app.models.password_reset import PasswordResetToken
 from app.models.product import Product
 from app.models.session import UserSession
 from app.models.tenant import Tenant
 from app.models.user import User
-from app.services import audit_service, email_service, license_service
+from app.services import audit_service, email_outbox_service, license_service, login_lockout_service
 
 settings = get_settings()
 _DUMMY_HASH = hash_password("fortexahome-dummy-password")
@@ -121,93 +121,66 @@ def _seed_categories(db: Session, tenant_id: uuid.UUID) -> None:
         )
 
 
-def activate_account(
-    db: Session,
-    *,
-    name: str,
-    email: str,
-    password: str,
-    license_code: str,
-) -> tuple[str, dict]:
-    email_normalized = normalize_email(email)
-    email_hash = email_lookup_hash(email_normalized)
-    set_db_context(db, login_email_hash=email_hash)
-
-    license_row = license_service.validate_license_for_activation(
-        db, license_code, email_hash=email_hash
+def _lockout_error(lockout) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        detail="Muitas tentativas de login. Tente novamente mais tarde.",
+        headers={"Retry-After": str(max(1, lockout.retry_after_seconds))},
     )
-
-    existing = db.scalar(select(User).where(User.email_lookup_hash == email_hash))
-    if existing is not None:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Já existe uma conta com este e-mail. Entre para continuar.",
-        )
-    tenant_id = uuid.uuid4()
-    set_db_context(db, tenant_id=tenant_id)
-
-    try:
-        tenant = Tenant(id=tenant_id, name=name.strip(), currency="BRL", timezone="America/Sao_Paulo")
-        db.add(tenant)
-        db.flush()
-
-        user = User(
-            tenant_id=tenant_id,
-            email_encrypted=encrypt_text(email_normalized, "users.email"),
-            email_lookup_hash=email_hash,
-            email_masked=masked_email(email_normalized),
-            name_encrypted=encrypt_text(name.strip(), "users.name"),
-            password_hash=hash_password(password),
-            role="owner",
-            status="active",
-            theme="claro",
-        )
-        db.add(user)
-        db.flush()
-
-        _seed_categories(db, tenant_id)
-        license_service.bind_license(db, license_row, tenant_id, email_hash)
-        token, session = _create_session(db, user)
-        audit_service.record(
-            db,
-            "ACCOUNT_ACTIVATED",
-            tenant_id=tenant_id,
-            user_id=user.id,
-            entity="license",
-            entity_id=license_row.id,
-        )
-        db.commit()
-    except IntegrityError:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Não foi possível criar a conta. Verifique os dados ou faça login.",
-        ) from None
-
-    return token, auth_payload(db, user, tenant, license_row)
 
 
 def authenticate(db: Session, *, email: str, password: str) -> tuple[str, dict]:
     email_hash = email_lookup_hash(email)
+    lockout = login_lockout_service.get_status(db, email)
+    if not lockout.allowed:
+        raise _lockout_error(lockout)
+
     set_db_context(db, login_email_hash=email_hash)
     user = db.scalar(select(User).where(User.email_lookup_hash == email_hash))
-
     if user is None:
+        db.rollback()
         verify_password(password, _DUMMY_HASH)
+        lockout = login_lockout_service.record_failure(db, email)
         audit_service.record(db, "LOGIN_FAILED")
+        if lockout.lock_triggered:
+            audit_service.record(db, "LOGIN_LOCKED")
         db.commit()
+        if not lockout.allowed:
+            raise _lockout_error(lockout)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="E-mail ou senha inválidos")
 
-    if not verify_password(password, user.password_hash):
-        user.failed_login_count += 1
-        set_db_context(db, tenant_id=user.tenant_id)
-        audit_service.record(db, "LOGIN_FAILED", tenant_id=user.tenant_id, user_id=user.id)
+    user_id = user.id
+    tenant_id = user.tenant_id
+    password_hash = user.password_hash
+    email_verified = user.email_verified_at is not None
+    db.rollback()
+
+    if not verify_password(password, password_hash):
+        set_db_context(db, login_email_hash=email_hash, tenant_id=tenant_id)
+        current_user = db.get(User, user_id)
+        if current_user is not None:
+            current_user.failed_login_count += 1
+        lockout = login_lockout_service.record_failure(db, email)
+        audit_service.record(db, "LOGIN_FAILED", tenant_id=tenant_id, user_id=user_id)
+        if lockout.lock_triggered:
+            audit_service.record(db, "LOGIN_LOCKED", tenant_id=tenant_id, user_id=user_id)
         db.commit()
+        if not lockout.allowed:
+            raise _lockout_error(lockout)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="E-mail ou senha inválidos")
 
-    set_db_context(db, tenant_id=user.tenant_id)
-    tenant = db.get(Tenant, user.tenant_id)
-    license_row = license_service.get_license_for_tenant(db, user.tenant_id)
+    if not email_verified:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="E-mail ou senha inválidos")
+
+    login_lockout_service.record_success(db, email)
+    set_db_context(db, login_email_hash=email_hash, tenant_id=tenant_id)
+    user = db.get(User, user_id)
+    if user is None or user.password_hash != password_hash:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="E-mail ou senha inválidos")
+
+    set_db_context(db, tenant_id=tenant_id)
+    tenant = db.get(Tenant, tenant_id)
+    license_row = license_service.get_license_for_tenant(db, tenant_id)
     now = datetime.now(timezone.utc)
 
     if user.status != "active":
@@ -251,38 +224,86 @@ def me_payload(db: Session, user: User, license_row: License) -> dict:
     return auth_payload(db, user, tenant, license_row)
 
 
-def forgot_password(db: Session, *, email: str) -> str | None:
+def forgot_password(db: Session, *, email: str, enforce_cooldown: bool = False) -> str | None:
     email_hash = email_lookup_hash(email)
     set_db_context(db, login_email_hash=email_hash)
-    user = db.scalar(select(User).where(User.email_lookup_hash == email_hash))
-    if user is None:
+    user_lookup = db.scalar(select(User).where(User.email_lookup_hash == email_hash))
+    if user_lookup is None:
         return None
 
-    set_db_context(db, tenant_id=user.tenant_id)
+    set_db_context(db, tenant_id=user_lookup.tenant_id)
+    user = db.scalar(select(User).where(User.id == user_lookup.id).with_for_update())
+    if user is None:
+        return None
+    now = datetime.now(timezone.utc)
+    if enforce_cooldown:
+        recent = db.scalar(
+            select(PasswordResetToken)
+            .where(PasswordResetToken.user_id == user.id)
+            .order_by(PasswordResetToken.created_at.desc())
+            .limit(1)
+        )
+        if recent is not None and recent.created_at > now - timedelta(seconds=60):
+            return None
+    previous_reset_ids = list(
+        db.scalars(
+            select(PasswordResetToken.id).where(PasswordResetToken.user_id == user.id)
+        ).all()
+    )
+    db.execute(
+        update(PasswordResetToken)
+        .where(PasswordResetToken.user_id == user.id, PasswordResetToken.used_at.is_(None))
+        .values(used_at=now)
+    )
+    for reset_id in previous_reset_ids:
+        set_db_context(db, password_reset_token_id=reset_id)
+        db.execute(
+            update(EmailOutbox)
+            .where(
+                EmailOutbox.event_type == "password_reset",
+                EmailOutbox.aggregate_id == reset_id,
+                EmailOutbox.status.in_(("pending", "processing")),
+            )
+            .values(
+                status="cancelled", processed_at=now, payload_encrypted=None,
+                claimed_by=None, lease_until=None, last_error="reset_token_replaced",
+            )
+        )
     token = generate_token()
     token_hash = hash_token(token)
-    db.add(
-        PasswordResetToken(
-            tenant_id=user.tenant_id,
-            user_id=user.id,
-            token_hash=token_hash,
-            expires_at=datetime.now(timezone.utc) + timedelta(minutes=settings.PASSWORD_RESET_TTL_MINUTES),
-        )
+    reset_row = PasswordResetToken(
+        tenant_id=user.tenant_id,
+        user_id=user.id,
+        token_hash=token_hash,
+        expires_at=now + timedelta(minutes=settings.PASSWORD_RESET_TTL_MINUTES),
+    )
+    db.add(reset_row)
+    db.flush()
+    email_normalized = decrypt_text(user.email_encrypted, "users.email") or ""
+    email_outbox_service.enqueue_email(
+        db,
+        event_type="password_reset",
+        payload={"to": email_normalized, "token": token},
+        idempotency_key=f"password-reset:{reset_row.id}",
+        aggregate_id=reset_row.id,
+        expires_at=reset_row.expires_at,
     )
     audit_service.record(db, "PASSWORD_RESET_REQUESTED", tenant_id=user.tenant_id, user_id=user.id)
     db.commit()
-
-    email_normalized = decrypt_text(user.email_encrypted, "users.email") or ""
-    email_service.send_password_reset(email_normalized, token)
     return token if settings.DEBUG else None
 
 
 def reset_password(db: Session, *, token: str, new_password: str) -> None:
     token_hash = hash_token(token)
     set_db_context(db, password_reset_hash=token_hash)
+    lookup = db.scalar(select(PasswordResetToken).where(PasswordResetToken.token_hash == token_hash))
+    if lookup is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Token inválido ou já utilizado")
+    set_db_context(db, tenant_id=lookup.tenant_id)
+    user = db.scalar(select(User).where(User.id == lookup.user_id).with_for_update())
     reset_row = db.scalar(
         select(PasswordResetToken)
-        .where(PasswordResetToken.token_hash == token_hash)
+        .where(PasswordResetToken.id == lookup.id, PasswordResetToken.token_hash == token_hash)
         .with_for_update()
     )
     if reset_row is None or reset_row.used_at is not None:
@@ -290,14 +311,25 @@ def reset_password(db: Session, *, token: str, new_password: str) -> None:
     if reset_row.expires_at <= datetime.now(timezone.utc):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Token expirado")
 
-    set_db_context(db, tenant_id=reset_row.tenant_id)
-    user = db.get(User, reset_row.user_id)
-    if user is None:
+    if user is None or user.id != reset_row.user_id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Conta não encontrada")
 
     user.password_hash = hash_password(new_password)
     user.password_changed_at = datetime.now(timezone.utc)
     reset_row.used_at = datetime.now(timezone.utc)
+    set_db_context(db, password_reset_token_id=reset_row.id)
+    db.execute(
+        update(EmailOutbox)
+        .where(
+            EmailOutbox.event_type == "password_reset",
+            EmailOutbox.aggregate_id == reset_row.id,
+            EmailOutbox.status.in_(("pending", "processing")),
+        )
+        .values(
+            status="cancelled", processed_at=reset_row.used_at, payload_encrypted=None,
+            claimed_by=None, lease_until=None, last_error="reset_token_used",
+        )
+    )
     db.execute(
         update(UserSession)
         .where(UserSession.user_id == user.id, UserSession.revoked_at.is_(None))

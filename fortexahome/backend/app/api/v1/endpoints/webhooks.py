@@ -3,6 +3,7 @@ import logging
 
 from fastapi import APIRouter, HTTPException, Request, status
 
+from app.core.config import get_settings
 from app.core.deps import DBSession
 from app.core.rate_limit import limiter
 from app.integrations.payments.hmac_sandbox import HmacSandboxProvider
@@ -16,8 +17,13 @@ _PROVIDERS = {
 }
 
 
+def sandbox_routes_enabled() -> bool:
+    settings = get_settings()
+    return settings.PAYMENT_SANDBOX_ENABLED and not settings.is_production
+
+
 @router.post("/payments/{provider}", status_code=status.HTTP_200_OK)
-@limiter.limit("120/minute")
+@limiter.limit("120/minute", keys=("ip",), scope="webhooks.payment")
 async def payment_webhook(provider: str, request: Request, db: DBSession) -> dict:
     implementation = _PROVIDERS.get(provider)
     if implementation is None:

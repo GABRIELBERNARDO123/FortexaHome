@@ -20,3 +20,5 @@ venv/
 playwright-report/
 test-results/
 frontend/.vite/
+
+frontend/e2e/.auth/

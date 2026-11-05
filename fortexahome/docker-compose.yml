@@ -32,7 +32,7 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    command: ["alembic", "upgrade", "head"]
+    command: ["sh", "-c", "python -m app.cli.preflight --stage environment && alembic upgrade head"]
     restart: "no"
     networks:
       - fortexahome_net
@@ -58,6 +58,33 @@ services:
     networks:
       - fortexahome_net
 
+  email-worker:
+    build:
+      context: ./backend
+      target: runtime
+    image: fortexahome-api:local
+    env_file: .env
+    environment:
+      # Never give the worker the operational or migration database credentials.
+      DATABASE_URL: postgresql+psycopg://${OUTBOX_DB_USER}:${OUTBOX_DB_PASSWORD}@db:5432/${POSTGRES_DB}
+      MIGRATION_DATABASE_URL: postgresql+psycopg://${OUTBOX_DB_USER}:${OUTBOX_DB_PASSWORD}@db:5432/${POSTGRES_DB}
+      APP_DB_PASSWORD: ""
+      POSTGRES_PASSWORD: ""
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    command: ["python", "-m", "app.workers.email_outbox"]
+    restart: unless-stopped
+    stop_grace_period: 2m
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.workers.email_outbox", "--check"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - fortexahome_net
+
   web:
     build:
       context: ./frontend
@@ -76,7 +103,64 @@ services:
       retries: 8
       start_period: 10s
     networks:
-      - fortexahome_net
+      fortexahome_net:
+        ipv4_address: 172.31.0.10
+
+  test-db:
+    image: postgres:16-alpine
+    profiles: [tests]
+    environment:
+      POSTGRES_DB: fortexahome_test
+      POSTGRES_USER: test_migrator
+      POSTGRES_PASSWORD: test_migrator_local_only
+      APP_DB_USER: test_runtime
+      OUTBOX_DB_USER: test_outbox_worker
+      OUTBOX_DB_PASSWORD: test_outbox_worker_local_only_password
+      APP_DB_PASSWORD: test_runtime_local_only
+    volumes:
+      - ./backend/docker/postgres-init.sh:/docker-entrypoint-initdb.d/10-runtime-role.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U test_migrator -d fortexahome_test"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    networks:
+      - fortexahome_test_net
+
+  tests:
+    build:
+      context: ./backend
+      target: test
+    profiles: [tests]
+    command: ["pytest", "--run-integration", "--cov=app", "--cov-report=term-missing"]
+    environment:
+      ENV: test
+      DEBUG: "true"
+      DATABASE_URL: postgresql+psycopg://test_runtime:test_runtime_local_only@test-db:5432/fortexahome_test
+      MIGRATION_DATABASE_URL: postgresql+psycopg://test_migrator:test_migrator_local_only@test-db:5432/fortexahome_test
+      APP_DB_USER: test_runtime
+      OUTBOX_DB_USER: test_outbox_worker
+      OUTBOX_DB_PASSWORD: test_outbox_worker_local_only_password
+      TEST_POSTGRES_DB: fortexahome_test
+      TEST_DATABASE_URL: postgresql+psycopg://test_runtime:test_runtime_local_only@test-db:5432/fortexahome_test
+      TEST_MIGRATION_DATABASE_URL: postgresql+psycopg://test_migrator:test_migrator_local_only@test-db:5432/fortexahome_test
+      SECRET_KEY: test-secret-key-not-for-production-000000000
+      PII_ENCRYPTION_KEY: YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWE=
+      PII_LOOKUP_KEY: test-pii-lookup-key-not-for-production-000000
+      LICENSE_HMAC_KEY: test-license-hmac-key-not-for-production-0000
+      CORS_ORIGINS: http://localhost:3010
+      PAYMENT_WEBHOOK_SECRET: test-webhook-secret-not-for-production
+      PAYMENT_SANDBOX_ENABLED: "true"
+      EMAIL_VERIFICATION_HMAC_KEY: test-email-verification-hmac-key-0000000000
+      OUTBOX_POLL_SECONDS: "0.1"
+      OUTBOX_BATCH_SIZE: "10"
+      OUTBOX_LEASE_SECONDS: "3"
+      RATE_LIMIT_HMAC_KEY: test-rate-limit-hmac-key-not-for-production-0000
+    depends_on:
+      test-db:
+        condition: service_healthy
+    networks:
+      - fortexahome_test_net
 
 volumes:
   fortexahome_pgdata:
@@ -85,3 +169,8 @@ volumes:
 networks:
   fortexahome_net:
     name: fortexahome_net
+    ipam:
+      config:
+        - subnet: 172.31.0.0/24
+  fortexahome_test_net:
+    name: fortexahome_test_net

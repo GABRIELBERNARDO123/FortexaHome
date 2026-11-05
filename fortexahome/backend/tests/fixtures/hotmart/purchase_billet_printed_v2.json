@@ -1,0 +1,15 @@
+{
+  "id": "evt-test-billet-printed-0001",
+  "creation_date": 1793480400000,
+  "event": "PURCHASE_BILLET_PRINTED",
+  "version": "2.0.0",
+  "data": {
+    "product": {"ucode": "UCODE-FICTICIO-001"},
+    "purchase": {
+      "transaction": "TX-TESTE-NAO-REAL-0009",
+      "status": "BILLET_PRINTED",
+      "price": {"value": 1.0, "currency_code": "BRL"},
+      "full_price": {"value": 1.05, "currency_code": "BRL"}
+    }
+  }
+}

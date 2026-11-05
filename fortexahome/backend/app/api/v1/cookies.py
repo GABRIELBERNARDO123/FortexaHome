@@ -27,3 +27,25 @@ def clear_session_cookie(response: Response) -> None:
         samesite=settings.SESSION_COOKIE_SAMESITE,
         path="/",
     )
+
+
+def set_support_session_cookie(response: Response, token: str) -> None:
+    response.set_cookie(
+        key=settings.SUPPORT_SESSION_COOKIE_NAME,
+        value=token,
+        max_age=settings.SUPPORT_SESSION_EXPIRE_HOURS * 3600,
+        httponly=True,
+        secure=settings.SESSION_COOKIE_SECURE,
+        samesite=settings.SESSION_COOKIE_SAMESITE,
+        path="/api/v1/support",
+    )
+
+
+def clear_support_session_cookie(response: Response) -> None:
+    response.delete_cookie(
+        key=settings.SUPPORT_SESSION_COOKIE_NAME,
+        httponly=True,
+        secure=settings.SESSION_COOKIE_SECURE,
+        samesite=settings.SESSION_COOKIE_SAMESITE,
+        path="/api/v1/support",
+    )

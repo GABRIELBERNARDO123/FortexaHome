@@ -22,17 +22,19 @@ import {
   Field,
   IconButton,
   Input,
+  Modal,
   PageHeader,
   Panel,
   Select,
   Skeleton,
+  Textarea,
 } from "../components/ui";
 import { useAuth } from "../context/AuthContext";
 import { useToast } from "../context/ToastContext";
 import { api, downloadFile, errorMessage } from "../lib/api";
 import { dateLabel } from "../lib/format";
 import { useApiData } from "../lib/useApiData";
-import type { Account, LicenseStatus, SessionInfo, Theme } from "../types";
+import type { Account, LicenseStatus, PrivacyRequest, SessionInfo, Theme } from "../types";
 
 const TIMEZONES = [
   "America/Sao_Paulo",
@@ -80,6 +82,7 @@ export default function SettingsPage() {
   const account = useApiData<Account>("/account");
   const license = useApiData<LicenseStatus>("/license");
   const sessions = useApiData<SessionInfo[]>("/auth/sessions");
+  const privacyRequests = useApiData<PrivacyRequest[]>("/privacy/requests");
 
   const [form, setForm] = useState({
     family_name: "",
@@ -98,6 +101,11 @@ export default function SettingsPage() {
   const [passwordError, setPasswordError] = useState<string | null>(null);
   const [revoking, setRevoking] = useState<SessionInfo | null>(null);
   const [revokeLoading, setRevokeLoading] = useState(false);
+  const [privacyOpen, setPrivacyOpen] = useState(false);
+  const [privacyPassword, setPrivacyPassword] = useState("");
+  const [privacyReason, setPrivacyReason] = useState("");
+  const [privacyError, setPrivacyError] = useState<string | null>(null);
+  const [privacyLoading, setPrivacyLoading] = useState(false);
 
   useEffect(() => {
     if (account.data) {
@@ -211,6 +219,31 @@ export default function SettingsPage() {
       notify(errorMessage(caught), "error");
     } finally {
       setRevokeLoading(false);
+    }
+  };
+
+  const requestErasure = async () => {
+    setPrivacyError(null);
+    setPrivacyLoading(true);
+    try {
+      const result = await api<PrivacyRequest>("/privacy/requests", {
+        method: "POST",
+        body: JSON.stringify({ password: privacyPassword, reason: privacyReason.trim() || null }),
+      });
+      setPrivacyPassword("");
+      setPrivacyReason("");
+      setPrivacyOpen(false);
+      privacyRequests.reload();
+      if (result.status === "completed" || result.status === "partially_completed") {
+        notify(`Solicitação ${result.protocol} concluída. Sua sessão foi encerrada.`);
+        await logout();
+      } else {
+        notify(`Solicitação ${result.protocol} registrada com status ${result.status}.`);
+      }
+    } catch (caught) {
+      setPrivacyError(errorMessage(caught));
+    } finally {
+      setPrivacyLoading(false);
     }
   };
 
@@ -458,6 +491,47 @@ export default function SettingsPage() {
             </div>
           </Panel>
 
+          <Panel title="Privacidade e exclusão" subtitle="Solicite o encerramento da conta e acompanhe o protocolo.">
+            <div className="setting-action">
+              <div>
+                <strong>
+                  <Trash2 size={16} /> Solicitar exclusão da conta
+                </strong>
+                <p>
+                  Você precisará confirmar sua senha. Dados pessoais elegíveis serão excluídos ou anonimizados;
+                  registros comerciais, de segurança e de auditoria podem ser conservados de forma anonimizada.
+                </p>
+              </div>
+              <Button variant="secondary" onClick={() => { setPrivacyError(null); setPrivacyOpen(true); }}>
+                Solicitar
+              </Button>
+            </div>
+            <div className="setting-note">
+              <ShieldCheck size={16} />
+              Em tenant compartilhado, o encerramento do responsável é encaminhado para análise do suporte.
+              Membros podem encerrar apenas os próprios dados pessoais.
+            </div>
+            {privacyRequests.loading ? <Skeleton lines={2} /> : (privacyRequests.data || []).length > 0 ? (
+              <div className="session-list">
+                {(privacyRequests.data || []).map((request) => (
+                  <div className="session-row" key={request.id}>
+                    <div>
+                      <strong>
+                        {request.protocol} <Badge tone={request.status === "completed" ? "good" : request.status === "rejected" ? "bad" : "warn"}>{request.status}</Badge>
+                      </strong>
+                      <small>
+                        {new Date(request.created_at).toLocaleString("pt-BR")} · {request.scope === "tenant" ? "Conta do tenant" : "Dados do usuário"}
+                        {request.result_summary ? ` · ${request.result_summary}` : ""}
+                      </small>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="muted">Nenhuma solicitação de privacidade registrada.</p>
+            )}
+          </Panel>
+
           <Panel title="Sessão" subtitle="Tudo pronto por aqui?">
             <div className="setting-action">
               <div>
@@ -478,6 +552,44 @@ export default function SettingsPage() {
           </Panel>
         </div>
       )}
+
+      <Modal
+        open={privacyOpen}
+        onClose={() => !privacyLoading && setPrivacyOpen(false)}
+        title="Solicitar exclusão da conta"
+        subtitle="Confirme sua senha para registrar a solicitação. A operação é auditada e pode exigir análise do suporte."
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setPrivacyOpen(false)} disabled={privacyLoading}>Cancelar</Button>
+            <Button
+              variant="primary"
+              onClick={() => void requestErasure()}
+              loading={privacyLoading}
+              disabled={!privacyPassword}
+            >
+              Confirmar solicitação
+            </Button>
+          </>
+        }
+      >
+        <form onSubmit={(event) => { event.preventDefault(); void requestErasure(); }} className="form-stack">
+          <Field label="Senha atual" hint="Usada apenas para reautenticação; não é registrada.">
+            <Input
+              type="password"
+              autoComplete="current-password"
+              value={privacyPassword}
+              onChange={(event) => setPrivacyPassword(event.target.value)}
+            />
+          </Field>
+          <Field label="Motivo (opcional)" hint="Máximo de 1000 caracteres. Evite incluir dados pessoais desnecessários.">
+            <Textarea rows={3} maxLength={1000} value={privacyReason} onChange={(event) => setPrivacyReason(event.target.value)} />
+          </Field>
+          {privacyError ? <div className="form-error" role="alert">{privacyError}</div> : null}
+          <div className="support-note">
+            <Badge tone="warn">Ação irreversível quando concluída</Badge> Exporte seu backup JSON antes de prosseguir.
+          </div>
+        </form>
+      </Modal>
 
       <ConfirmDialog
         open={Boolean(revoking)}

@@ -13,7 +13,7 @@ from app.schemas.transaction import (
     TransactionSummary,
     TransactionUpdate,
 )
-from app.services import transaction_service
+from app.services import idempotency_service, transaction_service
 
 router = APIRouter(prefix="/transactions", tags=["lançamentos"])
 
@@ -56,8 +56,15 @@ def list_transactions(
 
 
 @router.post("", response_model=TransactionPublic, status_code=status.HTTP_201_CREATED)
-def create_transaction(payload: TransactionCreate, user: CurrentUser, db: DBSession) -> dict:
-    return transaction_service.create_transaction(db, user, payload.model_dump())
+def create_transaction(
+    payload: TransactionCreate,
+    user: CurrentUser,
+    db: DBSession,
+    idempotency_key: idempotency_service.IdempotencyKeyHeader = None,
+) -> dict:
+    return transaction_service.create_transaction(
+        db, user, payload.model_dump(), idempotency_key=idempotency_key
+    )
 
 
 @router.patch("/{transaction_id}", response_model=TransactionPublic)

@@ -12,7 +12,7 @@ from app.models.goal import Goal
 from app.models.goal_movement import GoalMovement
 from app.models.tenant import Tenant
 from app.models.user import User
-from app.services import audit_service
+from app.services import audit_service, idempotency_service
 from app.services.periods import today_in_timezone
 
 
@@ -85,15 +85,26 @@ def get_goal(db: Session, tenant_id: uuid.UUID, goal_id: uuid.UUID) -> Goal:
     return goal
 
 
-def create_goal(db: Session, user: User, data: dict) -> dict:
-    goal = Goal(tenant_id=user.tenant_id, **data)
-    db.add(goal)
-    db.flush()
-    audit_service.record(
-        db, "GOAL_CREATED", tenant_id=user.tenant_id, user_id=user.id, entity="goal", entity_id=goal.id
+def create_goal(
+    db: Session, user: User, data: dict, *, idempotency_key: str | None = None
+) -> dict:
+    def effect() -> tuple[dict, str, uuid.UUID]:
+        goal = Goal(tenant_id=user.tenant_id, **data)
+        db.add(goal)
+        db.flush()
+        audit_service.record(
+            db, "GOAL_CREATED", tenant_id=user.tenant_id, user_id=user.id, entity="goal", entity_id=goal.id
+        )
+        return _public(goal, Decimal("0"), _today(db, user.tenant_id)), "goal", goal.id
+
+    return idempotency_service.execute(
+        db,
+        user,
+        operation="goals.create",
+        key=idempotency_key,
+        payload=data,
+        effect=effect,
     )
-    db.commit()
-    return _public(goal, Decimal("0"), _today(db, user.tenant_id))
 
 
 def update_goal(db: Session, user: User, goal_id: uuid.UUID, data: dict) -> dict:
@@ -117,56 +128,79 @@ def delete_goal(db: Session, user: User, goal_id: uuid.UUID) -> None:
     db.commit()
 
 
-def add_movement(db: Session, user: User, goal_id: uuid.UUID, data: dict) -> dict:
-    goal = get_goal(db, user.tenant_id, goal_id)
-    saved = _saved_amounts(db, user.tenant_id).get(goal.id, Decimal("0"))
-    amount = Decimal(data["amount"])
-    if data["kind"] == "withdrawal" and amount > saved:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="A retirada não pode ser maior que o valor guardado na meta",
+def add_movement(
+    db: Session,
+    user: User,
+    goal_id: uuid.UUID,
+    data: dict,
+    *,
+    idempotency_key: str | None = None,
+) -> dict:
+    def effect() -> tuple[dict, str, uuid.UUID]:
+        goal = db.scalar(
+            select(Goal)
+            .where(Goal.id == goal_id, Goal.tenant_id == user.tenant_id)
+            .with_for_update()
         )
-    movement = GoalMovement(
-        tenant_id=user.tenant_id,
-        goal_id=goal.id,
-        created_by=user.id,
-        kind=data["kind"],
-        amount=amount,
-        occurred_on=data.get("occurred_on") or _today(db, user.tenant_id),
-        note=(data.get("note") or "").strip() or None,
-    )
-    db.add(movement)
-    db.flush()
+        if goal is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Meta não encontrada")
+        saved = _saved_amounts(db, user.tenant_id).get(goal.id, Decimal("0"))
+        amount = Decimal(data["amount"])
+        if data["kind"] == "withdrawal" and amount > saved:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="A retirada não pode ser maior que o valor guardado na meta",
+            )
+        movement = GoalMovement(
+            tenant_id=user.tenant_id,
+            goal_id=goal.id,
+            created_by=user.id,
+            kind=data["kind"],
+            amount=amount,
+            occurred_on=data.get("occurred_on") or _today(db, user.tenant_id),
+            note=(data.get("note") or "").strip() or None,
+        )
+        db.add(movement)
+        db.flush()
 
-    new_saved = saved + amount if data["kind"] == "deposit" else saved - amount
-    if new_saved >= Decimal(goal.target_amount) and goal.status == "active":
-        goal.status = "completed"
-        goal.completed_at = datetime.now(timezone.utc)
-    elif new_saved < Decimal(goal.target_amount) and goal.status == "completed":
-        goal.status = "active"
-        goal.completed_at = None
+        new_saved = saved + amount if data["kind"] == "deposit" else saved - amount
+        if new_saved >= Decimal(goal.target_amount) and goal.status == "active":
+            goal.status = "completed"
+            goal.completed_at = datetime.now(timezone.utc)
+        elif new_saved < Decimal(goal.target_amount) and goal.status == "completed":
+            goal.status = "active"
+            goal.completed_at = None
 
-    audit_service.record(
+        audit_service.record(
+            db,
+            "GOAL_MOVEMENT_CREATED",
+            tenant_id=user.tenant_id,
+            user_id=user.id,
+            entity="goal",
+            entity_id=goal.id,
+            details={"kind": data["kind"], "amount": f"{amount:.2f}"},
+        )
+        response = {
+            "goal": _public(goal, new_saved, _today(db, user.tenant_id)),
+            "movement": {
+                "id": movement.id,
+                "kind": movement.kind,
+                "amount": movement.amount,
+                "occurred_on": movement.occurred_on,
+                "note": movement.note,
+                "created_at": movement.created_at,
+            },
+        }
+        return response, "goal_movement", movement.id
+
+    return idempotency_service.execute(
         db,
-        "GOAL_MOVEMENT_CREATED",
-        tenant_id=user.tenant_id,
-        user_id=user.id,
-        entity="goal",
-        entity_id=goal.id,
-        details={"kind": data["kind"], "amount": f"{amount:.2f}"},
+        user,
+        operation="goals.movements.create",
+        key=idempotency_key,
+        payload={**data, "goal_id": goal_id},
+        effect=effect,
     )
-    db.commit()
-    return {
-        "goal": _public(goal, new_saved, _today(db, user.tenant_id)),
-        "movement": {
-            "id": movement.id,
-            "kind": movement.kind,
-            "amount": movement.amount,
-            "occurred_on": movement.occurred_on,
-            "note": movement.note,
-            "created_at": movement.created_at,
-        },
-    }
 
 
 def list_movements(db: Session, tenant_id: uuid.UUID, goal_id: uuid.UUID) -> list[dict]:

@@ -31,6 +31,13 @@ export interface AuthResponse {
   license: LicenseInfo;
 }
 
+export interface ActivationChallenge {
+  activation_id: string;
+  email_masked: string;
+  expires_at: string | null;
+  resend_at: string;
+}
+
 export interface LicenseStatus {
   id: string;
   status: string;
@@ -57,6 +64,9 @@ export interface Category {
   color: string;
   icon: string;
   is_system: boolean;
+  archived: boolean;
+  usage_count: number;
+  in_use: boolean;
 }
 
 export type TransactionKind = "income" | "expense";
@@ -191,4 +201,169 @@ export interface SessionInfo {
   last_seen_at: string;
   expires_at: string;
   current: boolean;
+}
+
+export interface SupportOperator {
+  id: string;
+  name: string;
+  email: string;
+  role: "support_read" | "support_operator";
+  status: "active" | "disabled";
+  created_at: string;
+  last_login_at: string | null;
+}
+
+export interface SupportAuthResponse {
+  operator: SupportOperator;
+  permissions: string[];
+}
+
+export interface SupportOrderListItem {
+  id: string;
+  transaction: string;
+  provider: string;
+  status: string;
+  product_slug: string;
+  product_name: string;
+  created_at: string;
+  last_event_at: string | null;
+  license_id: string | null;
+  license_status: string | null;
+  license_code_last4: string | null;
+  delivery_status: string | null;
+}
+
+export interface SupportDelivery {
+  id: string;
+  event_type: string;
+  status: string;
+  attempt_count: number;
+  max_attempts: number;
+  next_attempt_at: string | null;
+  processed_at: string | null;
+  sent_at: string | null;
+  last_error: string | null;
+  created_at: string;
+}
+
+export interface SupportOrderDetail {
+  order: {
+    id: string;
+    transaction: string;
+    provider: string;
+    status: string;
+    created_at: string;
+    updated_at: string;
+    amount_cents: number;
+    currency: string;
+    buyer_email_masked: string | null;
+  };
+  product: { slug: string; name: string };
+  license: {
+    id: string;
+    status: string;
+    code_last4: string;
+    tenant_id: string | null;
+    issued_at: string;
+    activated_at: string | null;
+    expires_at: string | null;
+    revoked_at: string | null;
+  } | null;
+  events: {
+    event_type: string;
+    provider_event_created_at: string | null;
+    processed_at: string;
+    state_priority: number;
+  }[];
+  deliveries: SupportDelivery[];
+}
+
+export interface SupportLicenseItem {
+  id: string;
+  code_last4: string;
+  status: string;
+  product_slug: string;
+  product_name: string;
+  order_id: string | null;
+  transaction: string | null;
+  tenant_id: string | null;
+  issued_at: string;
+  activated_at: string | null;
+  expires_at: string | null;
+  revoked_at: string | null;
+}
+
+export interface SupportOutboxItem {
+  id: string;
+  event_type: string;
+  status: string;
+  aggregate_id: string | null;
+  license_id: string | null;
+  order_id: string | null;
+  transaction: string | null;
+  order_status: string | null;
+  attempt_count: number;
+  max_attempts: number;
+  next_attempt_at: string | null;
+  processed_at: string | null;
+  sent_at: string | null;
+  last_error: string | null;
+  created_at: string;
+}
+
+export interface SupportAuditItem {
+  id: string;
+  operator_id: string | null;
+  operator_masked: string | null;
+  operation: string;
+  order_id: string | null;
+  license_id: string | null;
+  outbox_id: string | null;
+  justification: string | null;
+  result: string;
+  created_at: string;
+}
+
+export interface SupportDashboard {
+  orders: Record<string, number>;
+  licenses: Record<string, number>;
+  outbox: Record<string, number>;
+  dead_letters: number;
+}
+
+export interface PaginatedResponse<T> {
+  items: T[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export interface PrivacyRequest {
+  id: string;
+  protocol: string;
+  request_type: string;
+  status: string;
+  scope: string;
+  reason: string | null;
+  retention_summary: Record<string, unknown> | null;
+  result_summary: string | null;
+  review_justification: string | null;
+  created_at: string;
+  updated_at: string;
+  reviewed_at: string | null;
+  completed_at: string | null;
+  cancelled_at: string | null;
+}
+
+export interface PrivacyRequestEvent {
+  id: string;
+  event_type: string;
+  status: string | null;
+  actor_type: string;
+  details: Record<string, unknown> | null;
+  created_at: string;
+}
+
+export interface PrivacyRequestDetail extends PrivacyRequest {
+  events: PrivacyRequestEvent[];
 }

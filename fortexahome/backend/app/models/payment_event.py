@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Index, String, func
+from sqlalchemy import DateTime, ForeignKey, Index, SmallInteger, String, func
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -25,4 +25,6 @@ class PaymentEvent(UUIDMixin, CreatedAtMixin, Base):
         PGUUID(as_uuid=True), ForeignKey("orders.id", ondelete="SET NULL"), nullable=True
     )
     payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    provider_event_created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    state_priority: Mapped[int] = mapped_column(SmallInteger, nullable=False, server_default="0")
     processed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())

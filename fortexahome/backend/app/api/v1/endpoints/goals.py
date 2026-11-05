@@ -12,7 +12,7 @@ from app.schemas.goal import (
     GoalPublic,
     GoalUpdate,
 )
-from app.services import goal_service
+from app.services import goal_service, idempotency_service
 
 router = APIRouter(prefix="/goals", tags=["metas"])
 
@@ -23,8 +23,13 @@ def list_goals(user: CurrentUser, db: DBSession) -> list[dict]:
 
 
 @router.post("", response_model=GoalPublic, status_code=status.HTTP_201_CREATED)
-def create_goal(payload: GoalCreate, user: CurrentUser, db: DBSession) -> dict:
-    return goal_service.create_goal(db, user, payload.model_dump())
+def create_goal(
+    payload: GoalCreate,
+    user: CurrentUser,
+    db: DBSession,
+    idempotency_key: idempotency_service.IdempotencyKeyHeader = None,
+) -> dict:
+    return goal_service.create_goal(db, user, payload.model_dump(), idempotency_key=idempotency_key)
 
 
 @router.patch("/{goal_id}", response_model=GoalPublic)
@@ -45,6 +50,12 @@ def list_movements(goal_id: uuid.UUID, user: CurrentUser, db: DBSession) -> list
 
 @router.post("/{goal_id}/movements", status_code=status.HTTP_201_CREATED)
 def add_movement(
-    goal_id: uuid.UUID, payload: GoalMovementCreate, user: CurrentUser, db: DBSession
+    goal_id: uuid.UUID,
+    payload: GoalMovementCreate,
+    user: CurrentUser,
+    db: DBSession,
+    idempotency_key: idempotency_service.IdempotencyKeyHeader = None,
 ) -> dict:
-    return goal_service.add_movement(db, user, goal_id, payload.model_dump())
+    return goal_service.add_movement(
+        db, user, goal_id, payload.model_dump(), idempotency_key=idempotency_key
+    )

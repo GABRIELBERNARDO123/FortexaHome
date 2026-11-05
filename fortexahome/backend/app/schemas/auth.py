@@ -20,6 +20,22 @@ class ActivateRequest(APIModel):
         return value.strip()
 
 
+class ActivationCodeRequest(APIModel):
+    activation_id: uuid.UUID
+    code: str = Field(pattern=r"^\d{6}$")
+
+
+class ActivationResendRequest(APIModel):
+    activation_id: uuid.UUID
+
+
+class ActivationStartResponse(APIModel):
+    activation_id: uuid.UUID
+    email_masked: str
+    expires_at: datetime | None
+    resend_at: datetime
+
+
 class LoginRequest(APIModel):
     email: EmailStr
     password: str = Field(min_length=1, max_length=128)

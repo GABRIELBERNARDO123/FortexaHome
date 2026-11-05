@@ -14,6 +14,18 @@ export class ApiError extends Error {
 
 const AUTH_PATHS = ["/auth/login", "/auth/activate", "/auth/forgot-password", "/auth/reset-password"];
 
+export function newIdempotencyKey(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+  const random = Math.random().toString(36).slice(2);
+  return `fh-${Date.now().toString(36)}-${random}`;
+}
+
+export function idempotencyHeaders(key: string): Record<string, string> {
+  return { "Idempotency-Key": key };
+}
+
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
   if (init.body && !(init.body instanceof FormData) && !headers.has("Content-Type")) {
@@ -34,7 +46,11 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
 
   if (!response.ok) {
     if (response.status === 401 && !AUTH_PATHS.some((item) => path.startsWith(item))) {
-      window.dispatchEvent(new Event("fh:unauthorized"));
+      if (path.startsWith("/support/") && !path.startsWith("/support/auth/login")) {
+        window.dispatchEvent(new Event("fh:support-unauthorized"));
+      } else {
+        window.dispatchEvent(new Event("fh:unauthorized"));
+      }
     }
     const message =
       typeof payload === "object" && payload && "detail" in payload

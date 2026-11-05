@@ -26,3 +26,4 @@ class Category(UUIDMixin, CreatedAtMixin, UpdatedAtMixin, Base):
     color: Mapped[str] = mapped_column(String(16), nullable=False, server_default="#ffa400")
     icon: Mapped[str] = mapped_column(String(32), nullable=False, server_default="tag")
     is_system: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+    archived: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")

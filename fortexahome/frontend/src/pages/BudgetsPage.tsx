@@ -63,7 +63,7 @@ export default function BudgetsPage() {
 
   const usedCategoryIds = new Set((budgets.data || []).map((item) => item.category_id));
   const availableCategories = (categories.data || []).filter(
-    (category) => !usedCategoryIds.has(category.id),
+    (category) => !category.archived && !usedCategoryIds.has(category.id),
   );
 
   const openCreate = () => {

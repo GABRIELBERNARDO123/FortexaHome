@@ -9,7 +9,7 @@ import {
   Trash2,
   Undo2,
 } from "lucide-react";
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { useSearchParams } from "react-router-dom";
 
 import {
@@ -31,7 +31,7 @@ import {
   Textarea,
 } from "../components/ui";
 import { useToast } from "../context/ToastContext";
-import { api, errorMessage } from "../lib/api";
+import { api, errorMessage, idempotencyHeaders, newIdempotencyKey } from "../lib/api";
 import {
   centsToApiDecimal,
   currentMonth,
@@ -78,6 +78,8 @@ export default function BillsPage() {
   const [deleting, setDeleting] = useState<Bill | null>(null);
   const [actionId, setActionId] = useState<string | null>(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
+  const createIdempotencyKey = useRef<string | null>(null);
+  const actionIdempotencyKeys = useRef<Record<string, string>>({});
 
   const bounds = monthBounds(month);
   const bills = useApiData<Bill[]>(`/bills?start=${bounds.start}&end=${bounds.end}`);
@@ -100,6 +102,7 @@ export default function BillsPage() {
     setEditing(null);
     setForm(emptyForm());
     setFormError(null);
+    createIdempotencyKey.current = null;
     setModalOpen(true);
   };
 
@@ -148,7 +151,14 @@ export default function BillsPage() {
         await api(`/bills/${editing.id}`, { method: "PATCH", body: JSON.stringify(payload) });
         notify("Conta atualizada.");
       } else {
-        await api("/bills", { method: "POST", body: JSON.stringify(payload) });
+        const key = createIdempotencyKey.current ?? newIdempotencyKey();
+        createIdempotencyKey.current = key;
+        await api("/bills", {
+          method: "POST",
+          body: JSON.stringify(payload),
+          headers: idempotencyHeaders(key),
+        });
+        createIdempotencyKey.current = null;
         notify("Conta adicionada à agenda.");
       }
       setModalOpen(false);
@@ -163,14 +173,25 @@ export default function BillsPage() {
 
   const togglePaid = async (bill: Bill) => {
     setActionId(bill.id);
+    const action = bill.status === "paid" ? "unpay" : "pay";
+    const keyName = `${bill.id}:${action}`;
+    const key = actionIdempotencyKeys.current[keyName] ?? newIdempotencyKey();
+    actionIdempotencyKeys.current[keyName] = key;
     try {
-      if (bill.status === "paid") {
-        await api(`/bills/${bill.id}/unpay`, { method: "POST" });
+      if (action === "unpay") {
+        await api(`/bills/${bill.id}/unpay`, {
+          method: "POST",
+          headers: idempotencyHeaders(key),
+        });
         notify("Pagamento desfeito. A despesa vinculada foi removida.");
       } else {
-        await api(`/bills/${bill.id}/pay`, { method: "POST" });
+        await api(`/bills/${bill.id}/pay`, {
+          method: "POST",
+          headers: idempotencyHeaders(key),
+        });
         notify("Conta marcada como paga e despesa registrada.");
       }
+      delete actionIdempotencyKeys.current[keyName];
       bills.reload();
     } catch (caught) {
       notify(errorMessage(caught), "error");
@@ -392,11 +413,13 @@ export default function BillsPage() {
                 onChange={(event) => setForm({ ...form, category_id: event.target.value })}
               >
                 <option value="">Sem categoria</option>
-                {categories.data?.map((category) => (
-                  <option key={category.id} value={category.id}>
-                    {category.name}
-                  </option>
-                ))}
+                {(categories.data || [])
+                  .filter((category) => !category.archived || category.id === form.category_id)
+                  .map((category) => (
+                    <option key={category.id} value={category.id}>
+                      {category.name}{category.archived ? " (arquivada)" : ""}
+                    </option>
+                  ))}
               </Select>
             </Field>
             <Field label="Recorrência">

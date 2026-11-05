@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
+from app.api.v1.endpoints import webhooks as legacy_webhooks
+
 from app.api.v1.endpoints import (
     account,
     auth,
@@ -12,8 +14,11 @@ from app.api.v1.endpoints import (
     dashboard,
     goals,
     health,
+    hotmart_webhook,
     license,
+    privacy,
     reports,
+    support,
     transactions,
     webhooks,
 )
@@ -31,4 +36,8 @@ api_router.include_router(goals.router)
 api_router.include_router(dashboard.router)
 api_router.include_router(reports.router)
 api_router.include_router(license.router)
-api_router.include_router(webhooks.router)
+api_router.include_router(privacy.router)
+api_router.include_router(support.router)
+if legacy_webhooks.sandbox_routes_enabled():
+    api_router.include_router(legacy_webhooks.router)
+api_router.include_router(hotmart_webhook.router)

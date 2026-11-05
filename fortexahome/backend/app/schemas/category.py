@@ -19,6 +19,7 @@ class CategoryUpdate(APIModel):
     name: str | None = Field(default=None, min_length=1, max_length=80)
     color: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
     icon: str | None = Field(default=None, max_length=32)
+    archived: bool | None = None
 
 
 class CategoryPublic(APIModel):
@@ -28,3 +29,6 @@ class CategoryPublic(APIModel):
     color: str
     icon: str
     is_system: bool
+    archived: bool
+    usage_count: int
+    in_use: bool

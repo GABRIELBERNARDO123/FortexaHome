@@ -13,7 +13,7 @@ from app.models.category import Category
 from app.models.credit_card import CreditCard
 from app.models.transaction import Transaction
 from app.models.user import User
-from app.services import audit_service
+from app.services import audit_service, idempotency_service
 from app.services.category_service import get_category
 
 
@@ -39,7 +39,14 @@ def _public(row: Transaction, category_name: str | None) -> dict:
     }
 
 
-def _validate_category(db: Session, tenant_id: uuid.UUID, category_id: uuid.UUID | None, kind: str) -> None:
+def _validate_category(
+    db: Session,
+    tenant_id: uuid.UUID,
+    category_id: uuid.UUID | None,
+    kind: str,
+    *,
+    allow_archived: bool = False,
+) -> None:
     if category_id is None:
         return
     category = get_category(db, tenant_id, category_id)
@@ -47,6 +54,11 @@ def _validate_category(db: Session, tenant_id: uuid.UUID, category_id: uuid.UUID
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="A categoria não corresponde ao tipo do lançamento",
+        )
+    if category.archived and not allow_archived:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Categoria arquivada. Escolha uma categoria ativa.",
         )
 
 
@@ -105,30 +117,45 @@ def get_transaction(db: Session, tenant_id: uuid.UUID, transaction_id: uuid.UUID
     return row
 
 
-def create_transaction(db: Session, user: User, data: dict) -> dict:
-    _validate_category(db, user.tenant_id, data.get("category_id"), data["kind"])
-    _validate_card(db, user.tenant_id, data.get("card_id"), data["payment_method"])
-    row = Transaction(
-        tenant_id=user.tenant_id,
-        user_id=user.id,
-        kind=data["kind"],
-        amount=data["amount"],
-        occurred_on=data["occurred_on"],
-        description=data["description"].strip(),
-        category_id=data.get("category_id"),
-        payment_method=data["payment_method"],
-        notes=(data.get("notes") or "").strip() or None,
-        card_id=data.get("card_id"),
-        source="manual",
+def create_transaction(
+    db: Session, user: User, data: dict, *, idempotency_key: str | None = None
+) -> dict:
+    def effect() -> tuple[dict, str, uuid.UUID]:
+        _validate_category(db, user.tenant_id, data.get("category_id"), data["kind"])
+        _validate_card(db, user.tenant_id, data.get("card_id"), data["payment_method"])
+        row = Transaction(
+            tenant_id=user.tenant_id,
+            user_id=user.id,
+            kind=data["kind"],
+            amount=data["amount"],
+            occurred_on=data["occurred_on"],
+            description=data["description"].strip(),
+            category_id=data.get("category_id"),
+            payment_method=data["payment_method"],
+            notes=(data.get("notes") or "").strip() or None,
+            card_id=data.get("card_id"),
+            source="manual",
+        )
+        db.add(row)
+        db.flush()
+        audit_service.record(
+            db, "TRANSACTION_CREATED", tenant_id=user.tenant_id, user_id=user.id, entity="transaction", entity_id=row.id
+        )
+        category_name = (
+            db.scalar(select(Category.name).where(Category.id == row.category_id))
+            if row.category_id
+            else None
+        )
+        return _public(row, category_name), "transaction", row.id
+
+    return idempotency_service.execute(
+        db,
+        user,
+        operation="transactions.create",
+        key=idempotency_key,
+        payload=data,
+        effect=effect,
     )
-    db.add(row)
-    db.flush()
-    audit_service.record(
-        db, "TRANSACTION_CREATED", tenant_id=user.tenant_id, user_id=user.id, entity="transaction", entity_id=row.id
-    )
-    db.commit()
-    category_name = db.scalar(select(Category.name).where(Category.id == row.category_id)) if row.category_id else None
-    return _public(row, category_name)
 
 
 def update_transaction(db: Session, user: User, transaction_id: uuid.UUID, data: dict) -> dict:
@@ -140,10 +167,14 @@ def update_transaction(db: Session, user: User, transaction_id: uuid.UUID, data:
         )
     new_kind = data.get("kind", row.kind)
     new_payment = data.get("payment_method", row.payment_method)
-    if "category_id" in data:
-        _validate_category(db, user.tenant_id, data.get("category_id"), new_kind)
-    else:
-        _validate_category(db, user.tenant_id, row.category_id, new_kind)
+    category_id = data["category_id"] if "category_id" in data else row.category_id
+    _validate_category(
+        db,
+        user.tenant_id,
+        category_id,
+        new_kind,
+        allow_archived=category_id == row.category_id and new_kind == row.kind,
+    )
     if "card_id" in data:
         _validate_card(db, user.tenant_id, data.get("card_id"), new_payment)
     else:

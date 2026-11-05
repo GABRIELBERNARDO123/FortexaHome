@@ -1,0 +1,15 @@
+{
+  "id": "evt-test-complete-0001",
+  "creation_date": 1793476800000,
+  "event": "PURCHASE_COMPLETE",
+  "version": "2.0.0",
+  "data": {
+    "product": {"ucode": "UCODE-FICTICIO-001"},
+    "purchase": {
+      "transaction": "TX-TESTE-NAO-REAL-0008",
+      "status": "COMPLETE",
+      "price": {"value": 1.0, "currency_code": "BRL"},
+      "full_price": {"value": 1.05, "currency_code": "BRL"}
+    }
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "id": "evt-test-protest-0001",
+  "creation_date": 1793462400000,
+  "event": "PURCHASE_PROTEST",
+  "version": "2.0.0",
+  "data": {
+    "product": {"ucode": "UCODE-FICTICIO-001"},
+    "buyer": {"email": "comprador-ficticio@example.com", "name": "Pessoa Compradora Fictícia"},
+    "purchase": {
+      "transaction": "TX-TESTE-NAO-REAL-0004",
+      "status": "PROTEST",
+      "price": {"value": 1.0, "currency_code": "BRL"},
+      "full_price": {"value": 1.05, "currency_code": "BRL"}
+    }
+  }
+}

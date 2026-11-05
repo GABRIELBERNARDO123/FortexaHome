@@ -10,7 +10,7 @@ import {
 
 import { ApiError, api } from "../lib/api";
 import { setDefaultTimeZone } from "../lib/format";
-import type { AuthResponse, Theme } from "../types";
+import type { ActivationChallenge, AuthResponse, Theme } from "../types";
 
 type AuthStatus = "loading" | "guest" | "authenticated" | "blocked";
 
@@ -19,7 +19,11 @@ interface AuthContextValue {
   auth: AuthResponse | null;
   blockedMessage: string | null;
   login: (email: string, password: string) => Promise<void>;
-  activate: (input: { name: string; email: string; password: string; license_code: string }) => Promise<void>;
+  activate: (input: { name: string; email: string; password: string; license_code: string }) => Promise<ActivationChallenge>;
+  confirmActivation: (activationId: string, code: string) => Promise<void>;
+  resendActivation: (activationId: string) => Promise<ActivationChallenge>;
+  recoverLicense: (input: { name: string; email: string; password: string }) => Promise<{ message: string }>;
+  confirmLicenseRecovery: (email: string, code: string) => Promise<void>;
   logout: () => Promise<void>;
   refresh: () => Promise<AuthResponse | null>;
   updateUserTheme: (theme: Theme) => void;
@@ -95,18 +99,53 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const activate = useCallback(
     async (input: { name: string; email: string; password: string; license_code: string }) => {
-      const result = await api<AuthResponse>("/auth/activate", {
+      return api<ActivationChallenge>("/auth/activate", {
         method: "POST",
         body: JSON.stringify(input),
       });
-      setAuth(result);
-      setDefaultTimeZone(result.tenant.timezone);
-      applyTheme(result.user.theme);
-      setBlockedMessage(null);
-      setStatus("authenticated");
     },
     [],
   );
+
+  const confirmActivation = useCallback(async (activationId: string, code: string) => {
+    const result = await api<AuthResponse>("/auth/activate/confirm", {
+      method: "POST",
+      body: JSON.stringify({ activation_id: activationId, code }),
+    });
+    setAuth(result);
+    setDefaultTimeZone(result.tenant.timezone);
+    applyTheme(result.user.theme);
+    setBlockedMessage(null);
+    setStatus("authenticated");
+  }, []);
+
+  const resendActivation = useCallback((activationId: string) =>
+    api<ActivationChallenge>("/auth/activate/resend", {
+      method: "POST",
+      body: JSON.stringify({ activation_id: activationId }),
+    }), []);
+
+  const recoverLicense = useCallback(
+    async (input: { name: string; email: string; password: string }) => {
+      return api<{ message: string }>("/auth/recover-license", {
+        method: "POST",
+        body: JSON.stringify(input),
+      });
+    },
+    [],
+  );
+
+  const confirmLicenseRecovery = useCallback(async (email: string, code: string) => {
+    const result = await api<AuthResponse>("/auth/recover-license/confirm", {
+      method: "POST",
+      body: JSON.stringify({ email, code }),
+    });
+    setAuth(result);
+    setDefaultTimeZone(result.tenant.timezone);
+    applyTheme(result.user.theme);
+    setBlockedMessage(null);
+    setStatus("authenticated");
+  }, []);
 
   const logout = useCallback(async () => {
     try {
@@ -149,8 +188,34 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo(
-    () => ({ status, auth, blockedMessage, login, activate, logout, refresh, updateUserTheme }),
-    [status, auth, blockedMessage, login, activate, logout, refresh, updateUserTheme],
+    () => ({
+      status,
+      auth,
+      blockedMessage,
+      login,
+      activate,
+      confirmActivation,
+      resendActivation,
+      recoverLicense,
+      confirmLicenseRecovery,
+      logout,
+      refresh,
+      updateUserTheme,
+    }),
+    [
+      status,
+      auth,
+      blockedMessage,
+      login,
+      activate,
+      confirmActivation,
+      resendActivation,
+      recoverLicense,
+      confirmLicenseRecovery,
+      logout,
+      refresh,
+      updateUserTheme,
+    ],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

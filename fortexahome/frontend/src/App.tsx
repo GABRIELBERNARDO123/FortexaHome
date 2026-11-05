@@ -7,10 +7,12 @@ import AuthPage from "./pages/AuthPage";
 import BudgetsPage from "./pages/BudgetsPage";
 import BillsPage from "./pages/BillsPage";
 import CardsPage from "./pages/CardsPage";
+import CategoriesPage from "./pages/CategoriesPage";
 import DashboardPage from "./pages/DashboardPage";
 import GoalsPage from "./pages/GoalsPage";
 import ReportsPage from "./pages/ReportsPage";
 import ResetPasswordPage from "./pages/ResetPasswordPage";
+import SupportApp from "./pages/support/SupportApp";
 import SettingsPage from "./pages/SettingsPage";
 import TransactionsPage from "./pages/TransactionsPage";
 
@@ -37,6 +39,7 @@ export default function App() {
           status === "authenticated" ? <Navigate to="/" replace /> : <ResetPasswordPage />
         }
       />
+      <Route path="/backoffice/*" element={<SupportApp />} />
       <Route
         element={
           <ProtectedRoute>
@@ -51,6 +54,7 @@ export default function App() {
         <Route path="orcamento" element={<BudgetsPage />} />
         <Route path="metas" element={<GoalsPage />} />
         <Route path="relatorios" element={<ReportsPage />} />
+        <Route path="categorias" element={<CategoriesPage />} />
         <Route path="configuracoes" element={<SettingsPage />} />
       </Route>
       <Route path="*" element={<Navigate to={status === "guest" ? "/entrar" : "/"} replace />} />

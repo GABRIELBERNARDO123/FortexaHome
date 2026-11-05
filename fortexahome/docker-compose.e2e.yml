@@ -1,0 +1,137 @@
+name: fortexahome_e2e
+
+x-e2e-env: &e2e-env
+  ENV: test
+  DEBUG: "true"
+  DATABASE_URL: postgresql+psycopg://e2e_runtime:e2e_runtime_local_only@e2e-db:5432/fortexahome_e2e
+  MIGRATION_DATABASE_URL: postgresql+psycopg://e2e_migrator:e2e_migrator_local_only@e2e-db:5432/fortexahome_e2e
+  APP_DB_USER: e2e_runtime
+  OUTBOX_DB_USER: e2e_outbox_worker
+  OUTBOX_DB_PASSWORD: e2e_outbox_worker_local_only_password
+  SECRET_KEY: e2e-secret-key-not-for-production-000000000
+  PII_ENCRYPTION_KEY: YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWE=
+  PII_LOOKUP_KEY: e2e-pii-lookup-key-not-for-production-000000
+  LICENSE_HMAC_KEY: e2e-license-hmac-key-not-for-production-0000
+  EMAIL_VERIFICATION_HMAC_KEY: e2e-email-verification-hmac-key-0000000000
+  EMAIL_PROVIDER: dev
+  EMAIL_FROM: FortexaHome <nao-responda@fortexahome.local>
+  APP_BASE_URL: http://127.0.0.1:3011
+  CORS_ORIGINS: http://127.0.0.1:3011,http://localhost:3011
+  TRUSTED_PROXY_IPS: 172.32.0.10
+  SESSION_COOKIE_SECURE: "false"
+  SESSION_COOKIE_SAMESITE: lax
+  RATE_LIMIT_ENABLED: "true"
+  RATE_LIMIT_HMAC_KEY: e2e-rate-limit-hmac-key-not-for-production-00000
+  PAYMENT_PROVIDER: hmac_sandbox
+  PAYMENT_WEBHOOK_SECRET: e2e-webhook-secret-not-for-production-0000
+  PAYMENT_SANDBOX_ENABLED: "false"
+  HOTMART_ENABLED: "false"
+  DEMO_MODE: "false"
+  ALLOW_PUBLIC_SIGNUP: "false"
+  OUTBOX_POLL_SECONDS: "0.1"
+  OUTBOX_BATCH_SIZE: "10"
+  OUTBOX_LEASE_SECONDS: "3"
+
+services:
+  e2e-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: fortexahome_e2e
+      POSTGRES_USER: e2e_migrator
+      POSTGRES_PASSWORD: e2e_migrator_local_only
+      APP_DB_USER: e2e_runtime
+      APP_DB_PASSWORD: e2e_runtime_local_only
+      OUTBOX_DB_USER: e2e_outbox_worker
+      OUTBOX_DB_PASSWORD: e2e_outbox_worker_local_only_password
+    volumes:
+      - ./backend/docker/postgres-init.sh:/docker-entrypoint-initdb.d/10-runtime-role.sh:ro
+    ports:
+      - "127.0.0.1:5435:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U e2e_migrator -d fortexahome_e2e"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    networks:
+      - e2e_net
+
+  e2e-migrate:
+    build:
+      context: ./backend
+      target: runtime
+    image: fortexahome-api:e2e
+    environment: *e2e-env
+    depends_on:
+      e2e-db:
+        condition: service_healthy
+    command: ["sh", "-c", "python -m app.cli.preflight --stage environment && alembic upgrade head"]
+    restart: "no"
+    networks:
+      - e2e_net
+
+  e2e-api:
+    build:
+      context: ./backend
+      target: runtime
+    image: fortexahome-api:e2e
+    environment: *e2e-env
+    depends_on:
+      e2e-migrate:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:8011:8000"
+    restart: "no"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/v1/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+    networks:
+      e2e_net:
+        aliases:
+          - api
+
+  e2e-web:
+    build:
+      context: ./frontend
+      target: runtime
+    image: fortexahome-web:e2e
+    depends_on:
+      e2e-api:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:3011:80"
+    restart: "no"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+    networks:
+      e2e_net:
+        ipv4_address: 172.32.0.10
+
+  e2e-seed:
+    build:
+      context: ./backend
+      target: test
+    image: fortexahome-tests:e2e
+    environment:
+      <<: *e2e-env
+      E2E_SEED: "1"
+    depends_on:
+      e2e-migrate:
+        condition: service_completed_successfully
+    command: ["python", "-m", "tests.e2e_seed"]
+    restart: "no"
+    networks:
+      - e2e_net
+
+networks:
+  e2e_net:
+    name: fortexahome_e2e_net
+    ipam:
+      config:
+        - subnet: 172.32.0.0/24

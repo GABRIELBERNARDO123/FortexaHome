@@ -9,7 +9,7 @@ import {
   Trash2,
   TrendingUp,
 } from "lucide-react";
-import { useMemo, useState, type FormEvent } from "react";
+import { useMemo, useRef, useState, type FormEvent } from "react";
 
 import {
   Badge,
@@ -30,7 +30,7 @@ import {
   Textarea,
 } from "../components/ui";
 import { useToast } from "../context/ToastContext";
-import { api, errorMessage } from "../lib/api";
+import { api, errorMessage, idempotencyHeaders, newIdempotencyKey } from "../lib/api";
 import {
   centsToApiDecimal,
   clampPercent,
@@ -131,6 +131,8 @@ export default function GoalsPage() {
   const [historyGoal, setHistoryGoal] = useState<Goal | null>(null);
   const [deleting, setDeleting] = useState<Goal | null>(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
+  const createIdempotencyKey = useRef<string | null>(null);
+  const movementIdempotencyKey = useRef<string | null>(null);
 
   const rows = resource.data || [];
   const stats = useMemo(() => {
@@ -149,6 +151,7 @@ export default function GoalsPage() {
     setEditing(null);
     setForm(emptyForm());
     setFormError(null);
+    createIdempotencyKey.current = null;
     setModalOpen(true);
   };
 
@@ -189,7 +192,14 @@ export default function GoalsPage() {
         await api(`/goals/${editing.id}`, { method: "PATCH", body: JSON.stringify(payload) });
         notify("Meta atualizada.");
       } else {
-        await api("/goals", { method: "POST", body: JSON.stringify(payload) });
+        const key = createIdempotencyKey.current ?? newIdempotencyKey();
+        createIdempotencyKey.current = key;
+        await api("/goals", {
+          method: "POST",
+          body: JSON.stringify(payload),
+          headers: idempotencyHeaders(key),
+        });
+        createIdempotencyKey.current = null;
         notify("Nova meta criada. O próximo sonho já tem um plano.");
       }
       setModalOpen(false);
@@ -206,6 +216,7 @@ export default function GoalsPage() {
     setMovementGoal(goal);
     setMovementForm({ ...emptyMovement(), kind });
     setMovementError(null);
+    movementIdempotencyKey.current = null;
   };
 
   const submitMovement = async (event: FormEvent) => {
@@ -219,6 +230,8 @@ export default function GoalsPage() {
     }
     setMovementSaving(true);
     try {
+      const key = movementIdempotencyKey.current ?? newIdempotencyKey();
+      movementIdempotencyKey.current = key;
       await api(`/goals/${movementGoal.id}/movements`, {
         method: "POST",
         body: JSON.stringify({
@@ -227,7 +240,9 @@ export default function GoalsPage() {
           occurred_on: movementForm.occurred_on,
           note: movementForm.note.trim() || null,
         }),
+        headers: idempotencyHeaders(key),
       });
+      movementIdempotencyKey.current = null;
       notify(movementForm.kind === "deposit" ? "Aporte registrado." : "Retirada registrada.");
       setMovementGoal(null);
       resource.reload();

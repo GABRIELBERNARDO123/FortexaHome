@@ -8,7 +8,7 @@ from fastapi import APIRouter, Query, Response, status
 
 from app.core.deps import CurrentUser, DBSession
 from app.schemas.bill import BillCreate, BillPublic, BillUpdate
-from app.services import bill_service
+from app.services import bill_service, idempotency_service
 
 router = APIRouter(prefix="/bills", tags=["contas a pagar"])
 
@@ -28,8 +28,13 @@ def list_bills(
 
 
 @router.post("", response_model=BillPublic, status_code=status.HTTP_201_CREATED)
-def create_bill(payload: BillCreate, user: CurrentUser, db: DBSession) -> dict:
-    return bill_service.create_bill(db, user, payload.model_dump())
+def create_bill(
+    payload: BillCreate,
+    user: CurrentUser,
+    db: DBSession,
+    idempotency_key: idempotency_service.IdempotencyKeyHeader = None,
+) -> dict:
+    return bill_service.create_bill(db, user, payload.model_dump(), idempotency_key=idempotency_key)
 
 
 @router.patch("/{bill_id}", response_model=BillPublic)
@@ -44,13 +49,23 @@ def delete_bill(bill_id: uuid.UUID, user: CurrentUser, db: DBSession) -> Respons
 
 
 @router.post("/{bill_id}/pay", response_model=BillPublic)
-def pay_bill(bill_id: uuid.UUID, user: CurrentUser, db: DBSession) -> dict:
-    return bill_service.pay_bill(db, user, bill_id)
+def pay_bill(
+    bill_id: uuid.UUID,
+    user: CurrentUser,
+    db: DBSession,
+    idempotency_key: idempotency_service.IdempotencyKeyHeader = None,
+) -> dict:
+    return bill_service.pay_bill(db, user, bill_id, idempotency_key=idempotency_key)
 
 
 @router.post("/{bill_id}/unpay", response_model=BillPublic)
-def unpay_bill(bill_id: uuid.UUID, user: CurrentUser, db: DBSession) -> dict:
-    return bill_service.unpay_bill(db, user, bill_id)
+def unpay_bill(
+    bill_id: uuid.UUID,
+    user: CurrentUser,
+    db: DBSession,
+    idempotency_key: idempotency_service.IdempotencyKeyHeader = None,
+) -> dict:
+    return bill_service.unpay_bill(db, user, bill_id, idempotency_key=idempotency_key)
 
 
 @router.post("/{bill_id}/recurrence", response_model=BillPublic, status_code=status.HTTP_201_CREATED)

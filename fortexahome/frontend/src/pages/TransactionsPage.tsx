@@ -8,7 +8,7 @@ import {
   Search,
   Trash2,
 } from "lucide-react";
-import { useDeferredValue, useEffect, useMemo, useState, type FormEvent } from "react";
+import { useDeferredValue, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { useSearchParams } from "react-router-dom";
 
 import {
@@ -29,7 +29,7 @@ import {
   Textarea,
 } from "../components/ui";
 import { useToast } from "../context/ToastContext";
-import { api, errorMessage } from "../lib/api";
+import { api, errorMessage, idempotencyHeaders, newIdempotencyKey } from "../lib/api";
 import {
   centsToApiDecimal,
   currentMonth,
@@ -100,6 +100,7 @@ export default function TransactionsPage() {
   const [formError, setFormError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<Transaction | null>(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
+  const createIdempotencyKey = useRef<string | null>(null);
 
   const bounds = monthBounds(month);
   const categories = useApiData<Category[]>("/categories");
@@ -125,14 +126,27 @@ export default function TransactionsPage() {
     setPage(1);
   }, [bounds.start, bounds.end, deferredSearch, kindFilter, categoryFilter]);
 
-  const expenseCategories = (categories.data || []).filter((item) => item.kind === "expense");
-  const incomeCategories = (categories.data || []).filter((item) => item.kind === "income");
-  const formCategories = form.kind === "expense" ? expenseCategories : incomeCategories;
+  const activeExpenseCategories = (categories.data || []).filter(
+    (item) => item.kind === "expense" && !item.archived,
+  );
+  const activeIncomeCategories = (categories.data || []).filter(
+    (item) => item.kind === "income" && !item.archived,
+  );
+  const selectedArchivedCategory = (categories.data || []).find(
+    (item) => item.id === form.category_id && item.archived,
+  );
+  const activeFormCategories = form.kind === "expense" ? activeExpenseCategories : activeIncomeCategories;
+  const formCategories =
+    selectedArchivedCategory &&
+    !activeFormCategories.some((item) => item.id === selectedArchivedCategory.id)
+      ? [...activeFormCategories, selectedArchivedCategory]
+      : activeFormCategories;
 
   const openCreate = () => {
     setEditing(null);
     setForm(emptyForm());
     setFormError(null);
+    createIdempotencyKey.current = null;
     setModalOpen(true);
   };
 
@@ -201,7 +215,14 @@ export default function TransactionsPage() {
         await api(`/transactions/${editing.id}`, { method: "PATCH", body: JSON.stringify(payload) });
         notify("Lançamento atualizado.");
       } else {
-        await api("/transactions", { method: "POST", body: JSON.stringify(payload) });
+        const key = createIdempotencyKey.current ?? newIdempotencyKey();
+        createIdempotencyKey.current = key;
+        await api("/transactions", {
+          method: "POST",
+          body: JSON.stringify(payload),
+          headers: idempotencyHeaders(key),
+        });
+        createIdempotencyKey.current = null;
         notify("Lançamento registrado.");
       }
       setModalOpen(false);
@@ -311,7 +332,7 @@ export default function TransactionsPage() {
             <option value="">Todas as categorias</option>
             {categories.data?.map((category) => (
               <option key={category.id} value={category.id}>
-                {category.name}
+                {category.name}{category.archived ? " (arquivada)" : ""}
               </option>
             ))}
           </Select>
@@ -486,7 +507,7 @@ export default function TransactionsPage() {
                 <option value="">Sem categoria</option>
                 {formCategories.map((category) => (
                   <option key={category.id} value={category.id}>
-                    {category.name}
+                    {category.name}{category.archived ? " (arquivada)" : ""}
                   </option>
                 ))}
               </Select>
